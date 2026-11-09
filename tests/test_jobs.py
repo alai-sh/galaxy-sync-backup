@@ -1,4 +1,5 @@
 import datetime
+import hashlib
 import json
 import random
 from pathlib import Path
@@ -66,7 +67,7 @@ def test_verify_finds_a_corrupted_artifact(backup: tuple[str, str], tmp_path: Pa
     data = victim.read_bytes()
     _ = victim.write_bytes(bytes([data[0] ^ 1]) + data[1:])
     [problem] = run_verify(backup, tmp_path)
-    assert "has sha256" in problem
+    assert f"has sha256 {hashlib.sha256(victim.read_bytes()).hexdigest()}, not {victim.name[:64]}" in problem
 
 
 def test_verify_finds_a_missing_artifact(backup: tuple[str, str], tmp_path: Path) -> None:

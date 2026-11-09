@@ -141,29 +141,37 @@ def verify(
     _ = rclone.copy(dest + "alai-index", str(work / "alai-index"), present)
     problems += _check_hashes(work / "alai-index", present, dest + "alai-index/")
 
+    versions = 0
     for key, name in current.items():
         if key not in have["alai-index"]:
             problems.append(f"{name}'s index file {key}, named by the {day} collections.json, isn't in {dest}")
             continue
         for line in _lines((work / "alai-index" / key).read_bytes()):
+            versions += 1
             artifact = _artifact_key(config, line["sha256"])
             size = have["alai-dl"].get(artifact)
             if size is None:
                 problems.append(f"{name} {line['vers']}'s artifact {artifact} isn't in {dest}")
             elif size != line["size"]:
                 problems.append(f"{name} {line['vers']}'s artifact {artifact} is {size} bytes, not {line['size']}")
+    log(f"checked the artifacts of the {versions} versions in the current index files are in {dest} at their size")
 
-    for key in _saved_conflicts(state):
+    conflicts = list(_saved_conflicts(state))
+    for key in conflicts:
         if key not in have["alai-state"]:
             problems.append(f"conflict artifact alai-state/{key}, named by the {day} state.json, isn't in {dest}")
+    log(f"checked the {len(conflicts)} conflict artifacts the {day} state.json names are in {dest}")
 
     picked = rng.sample(sorted(have["alai-dl"]), min(sample, len(have["alai-dl"])))
     log(f"hashing {len(picked)} random artifacts and every conflict artifact")
     for bucket, keys in (("alai-dl", picked), ("alai-state", sorted(have["alai-state"]))):
         if keys:
             digests = rclone.sha256(dest + bucket, keys)
-            problems += [f"{dest}{bucket}/{k} couldn't be read" for k in keys if k not in digests]
-            problems += [f"{dest}{bucket}/{k} has sha256 {d}" for k, d in digests.items() if d != _sha256_of(k)]
+            for k in keys:
+                if k in digests:
+                    problems += _check_digest(f"{dest}{bucket}/", k, digests[k])
+                else:
+                    problems.append(f"{dest}{bucket}/{k} couldn't be read")
     return problems
 
 
@@ -203,6 +211,7 @@ def restore_test(
             lines[name] = _lines(data)
     if problems:
         return problems
+    log(f"each of the {len(current)} index files restored matches the sha256 in its name")
 
     # alai gets a copy of the index whose dl template points at the restored artifacts on disk.
     dl = work / "dl"
@@ -229,7 +238,7 @@ def restore_test(
     def lock(names: list[str]) -> subprocess.CompletedProcess[str]:
         _ = (project / "alai.toml").write_text(f"[project]\ncollections = {json.dumps(names)}\n")
         (project / "alai.lock").unlink(missing_ok=True)
-        return subprocess.run([*alai, "lock", *alai_args], capture_output=True, text=True, check=False)
+        return _run([*alai, "lock", *alai_args])
 
     if wanted:
         candidates = wanted
@@ -247,6 +256,7 @@ def restore_test(
     for name in candidates:
         if len(picked) == count:
             break
+        log(f"trying {name}")
         res = lock([name])
         if res.returncode == 0:
             picked.append(name)
@@ -263,6 +273,8 @@ def restore_test(
     if res.returncode:
         return [f"locking {picked} from the restored index failed: {res.stderr.strip()}"]
     locked = tomllib.loads((project / "alai.lock").read_text())["collection"]
+    for c in locked:
+        log(f"locked {c['name']} {c['version']} sha256 {c['sha256']}")
 
     artifacts = {_artifact_key(config, c["sha256"]) for c in locked}
     artifacts |= {_artifact_key(config, line["sha256"]) for name in picked for line in lines[name]}
@@ -272,12 +284,14 @@ def restore_test(
     if problems:
         return problems
 
-    res = subprocess.run([*alai, "sync", "--frozen", *alai_args], capture_output=True, text=True, check=False)
+    res = _run([*alai, "sync", "--frozen", *alai_args])
     if res.returncode:
         return [f"installing {picked} from the restored index failed: {res.stderr.strip()}"]
     for c in locked:
         ns, name = c["name"].split(".", 1)
-        if not (project / "collections" / "ansible_collections" / ns / name / "MANIFEST.json").is_file():
+        if (project / "collections" / "ansible_collections" / ns / name / "MANIFEST.json").is_file():
+            log(f"installed {c['name']} {c['version']}")
+        else:
             problems.append(f"{c['name']} {c['version']} wasn't installed")
     log(f"installed {len(locked)} collections")
 
@@ -293,7 +307,7 @@ def restore_test(
         ns, coll = name.split(".", 1)
         sample["namespaces"].setdefault(ns, {})[coll] = listing["namespaces"][ns][coll]
     _ = (plugins / "collections.json").write_text(json.dumps(sample))
-    res = subprocess.run(
+    res = _run(
         [
             *alai_index,
             "generate-plugins",
@@ -307,15 +321,15 @@ def restore_test(
             "--plugin-cache",
             str(work / "plugin-cache"),
         ],
-        capture_output=True,
-        text=True,
-        check=False,
+        show_stdout=False,  # JSON, logged a version a line below
     )
     if res.returncode:
         return [*problems, f"alai-index generate-plugins failed: {res.stderr.strip()}"]
     out = json.loads(res.stdout)
     for v in out["versions"]:
-        if v["result"] != "extracted":
+        if v["result"] == "extracted":
+            log(f"extracted the plugins of {v['name']} {v['version']}")
+        else:
             problems.append(f"extracting {v['name']} {v['version']}'s plugins: {v['result']} {v.get('details')}")
     if out["outdated"]:
         problems.append(f"alai-index left versions outdated: {out['outdated']}")
@@ -323,6 +337,17 @@ def restore_test(
         problems.append("alai-index didn't write plugins.jsonl")
     log(f"extracted the plugins of {len(out['versions'])} versions")
     return problems
+
+
+def _run(cmd: list[str], show_stdout: bool = True) -> subprocess.CompletedProcess[str]:
+    """Run a command, logging it and its output."""
+    log(f"$ {shlex.join(cmd)}")
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    for line in ((res.stdout if show_stdout else "") + res.stderr).splitlines():
+        log(f"    {line}")
+    if res.returncode:
+        log(f"    exit code {res.returncode}")
+    return res
 
 
 def _latest_snapshot(
@@ -377,15 +402,23 @@ def _check_hashes(root: Path, files: dict[str, int], where: str) -> list[str]:
             continue
         with path.open("rb") as f:
             digest = hashlib.file_digest(f, "sha256").hexdigest()
-        if digest != _sha256_of(key):
-            problems.append(f"{where}{key} has sha256 {digest}")
-        elif size not in (-1, path.stat().st_size):
+        if size not in (-1, path.stat().st_size):
             problems.append(f"{where}{key} is {path.stat().st_size} bytes, but was listed at {size}")
+        else:
+            problems += _check_digest(where, key, digest)
     return problems
 
 
+def _check_digest(where: str, key: str, digest: str) -> list[str]:
+    """A file's key ends in the sha256 it should have."""
+    if digest != (expected := _sha256_of(key)):
+        return [f"{where}{key} has sha256 {digest}, not {expected} as its name says"]
+    log(f"ok {where}{key} sha256 {digest}")
+    return []
+
+
 def _saved_conflicts(state: dict[str, Any]) -> Iterator[str]:
-    for conflict in state.get("conflicts", {}).values():
+    for conflict in state.get("conflicts", []):
         for observed in conflict.get("observed", []):
             if saved := observed.get("saved"):
                 yield saved

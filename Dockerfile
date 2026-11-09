@@ -11,4 +11,6 @@ ENV PATH=/app/.venv/bin:$PATH
 
 USER 65534:65534
 ENV HOME=/tmp
+# Remotes come from RCLONE_CONFIG_* variables; this stops rclone's "config file not found" notice.
+ENV RCLONE_CONFIG=/dev/null
 ENTRYPOINT ["galaxy-sync-backup"]

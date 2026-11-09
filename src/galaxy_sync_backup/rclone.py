@@ -2,6 +2,7 @@
 
 import contextlib
 import json
+import shlex
 import subprocess
 import tempfile
 from collections.abc import Generator, Iterable
@@ -19,6 +20,7 @@ class Rclone:
         self.transfers: int = transfers
 
     def _run(self, *args: str, capture: bool = False, missing_ok: bool = False) -> bytes | None:
+        print(f"$ {shlex.join([self.exe, *args])}", flush=True)
         res = subprocess.run(
             [self.exe, *args],
             stdout=subprocess.PIPE if capture else None,
