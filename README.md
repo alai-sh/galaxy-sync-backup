@@ -107,12 +107,25 @@ az role assignment create --role "Storage Blob Data Reader" --assignee "$(az ad 
 
 ### Watching the jobs
 
+List a job's runs with their status:
+
 ```bash
-az containerapp job execution list --resource-group alai-galaxy-sync-backup --name backup-verify --output table
+az containerapp job execution list --resource-group alai-galaxy-sync-backup --name backup-copy --output table
 ```
 
-A run's output is in the Log Analytics workspace, in
-`ContainerAppConsoleLogs_CL`, filtered on `ContainerJobName_s`.
+Follow a run's output live, here the newest run of `copy`. `copy` prints a
+progress line from rclone every minute while it copies.
+
+```bash
+exe=$(az containerapp job execution list --resource-group alai-galaxy-sync-backup --name backup-copy \
+    --query 'sort_by([], &properties.startTime)[-1].name' --output tsv)
+az containerapp job logs show --resource-group alai-galaxy-sync-backup --name backup-copy \
+    --execution "$exe" --container backup --follow
+```
+
+Past runs' output is in the Log Analytics workspace, in
+`ContainerAppConsoleLogs_CL`, filtered on `ContainerJobName_s`, and in the
+portal under the job's Execution history.
 
 ### Releasing
 
