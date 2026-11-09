@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "galaxy-sync-backup"
-version = "0.1.0"
+version = "0.1.1"
 description = "Backs up alai's R2 buckets to Azure Blob Storage, and checks that the backup restores."
 readme = "README.md"
 requires-python = ">=3.15"

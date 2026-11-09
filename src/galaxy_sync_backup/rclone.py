@@ -50,6 +50,8 @@ class Rclone:
     def copy(self, src: str, dst: str, files: Iterable[str] | None = None) -> bool:
         # --immutable: a file in both with a different size is an error to look at, never replaced.
         args = ["copy", src, dst, "--immutable", "--size-only", f"--transfers={self.transfers}"]
+        # A progress line a minute in the job's log, which a long copy otherwise leaves silent.
+        args += ["--stats=1m", "--stats-one-line", "--stats-log-level=NOTICE"]
         if files is None:
             return self._run(*args, missing_ok=True) is not None
         with _files_from(files) as listing:
