@@ -1,0 +1,85 @@
+name: Image
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Check the tag is the project's version
+      env:
+        TAG: ${{ github.ref_name }}
+      run: |
+        version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+        if [ "$TAG" != "v$version" ]; then
+          echo "::error::tag $TAG doesn't match pyproject.toml's version $version, so tag v$version instead"
+          exit 1
+        fi
+
+  ci:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  image:
+    needs: ci
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Build and push
+      id: push
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        ACTOR: ${{ github.actor }}
+      run: |
+        echo "$GITHUB_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+        docker build --platform linux/amd64 --tag "$IMAGE" .
+        docker push "$IMAGE"
+        digest=$(docker inspect --format '{{index .RepoDigests 0}}' "$IMAGE")
+        echo "digest=$digest" >> "$GITHUB_OUTPUT"
+        echo "Pushed \`$digest\`." >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    needs: image
+    runs-on: ubuntu-latest
+    environment: azure
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906  # v3.1.0
+      with:
+        client-id: ${{ vars.AZURE_CLIENT_ID }}
+        tenant-id: ${{ vars.AZURE_TENANT_ID }}
+        subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Deploy the jobs
+      env:
+        IMAGE: ${{ needs.image.outputs.digest }}
+        RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+        STORAGE_ACCOUNT: ${{ vars.AZURE_STORAGE_ACCOUNT }}
+      run: |
+        az deployment group create --resource-group "$RESOURCE_GROUP" --name jobs --template-file infra/jobs.bicep \
+            --parameters image="$IMAGE" storageAccountName="$STORAGE_ACCOUNT" --output none
+        echo "Deployed the jobs with \`$IMAGE\`." >> "$GITHUB_STEP_SUMMARY"
