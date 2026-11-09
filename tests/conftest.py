@@ -146,7 +146,10 @@ def r2(tmp_path: Path) -> Path:
     _ = (state / "state.json").write_text(
         json.dumps(
             {
-                "conflicts": {"ns.base@1.0.0": {"observed": [{"sha256": sha256, "saved": saved}]}},
+                # galaxy-sync's SyncState: conflicts is a list of Conflict records.
+                "conflicts": [
+                    {"collection": "ns.base", "version": "1.0.0", "observed": [{"sha256": sha256, "saved": saved}]}
+                ],
             }
         )
     )
